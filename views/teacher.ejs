@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Teacher Panel</title>
+  <!-- Bootstrap CSS (optional for styling) -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+  />
+  <style>
+    .cluster-card {
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 12px;
+      width: 300px;
+      margin: 10px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .cluster-title {
+      font-weight: bold;
+      font-size: 1.1em;
+      margin-bottom: 8px;
+    }
+    .cluster-description {
+      font-style: italic;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body class="container py-4">
+
+  <h1 class="mb-4">Teacher Panel</h1>
+
+  <!-- Quiz Question -->
+  <div class="mb-3">
+    <label for="question" class="form-label">Quiz Question:</label>
+    <input type="text" class="form-control" id="question" placeholder="Enter your question" />
+  </div>
+
+  <!-- Correct Answers Dynamic -->
+  <div class="mb-3">
+    <label for="correctCount" class="form-label">Number of Correct Answers:</label>
+    <input type="number" class="form-control" id="correctCount" min="0" max="10" value="0" />
+    <button class="btn btn-secondary mt-2" id="createCorrectFieldsBtn">Generate Correct Fields</button>
+  </div>
+  <div id="correctFields" class="mb-3"></div>
+
+  <!-- Misconceptions Dynamic -->
+  <div class="mb-3">
+    <label for="miscount" class="form-label">Number of Misconceptions:</label>
+    <input type="number" class="form-control" id="miscount" min="0" max="10" value="0" />
+    <button class="btn btn-secondary mt-2" id="createMisFieldsBtn">Generate Misconception Fields</button>
+  </div>
+  <div id="misconceptionFields" class="mb-3"></div>
+
+  <!-- Create Quiz (optional) -->
+  <button class="btn btn-primary mb-3" id="createQuizBtn">Create Quiz</button>
+
+  <!-- Quiz Info Section (optional) -->
+  <div id="quizInfoSection" class="mb-3" style="display:none;">
+    <p>Quiz ID: <span id="quizIdLabel"></span></p>
+    <img id="qrImage" alt="QR Code" />
+    <p>Link: <a id="quizLink" target="_blank"></a></p>
+
+    <!-- Start / Close Buttons -->
+    <button class="btn btn-success" id="startQuizBtn">Start Quiz</button>
+    <button class="btn btn-danger" id="closeQuizBtn">Close Quiz</button>
+  </div>
+
+  <hr />
+
+  <!-- Real-Time Teacher Console for Student Responses -->
+  <h3>Teacher Console (Real-Time Responses)</h3>
+  <div id="teacherConsole" class="mb-3" style="min-height: 100px; border: 1px solid #ccc; padding: 10px;"></div>
+
+  <!-- Cluster button & results -->
+  <button class="btn btn-info mb-3" id="clusterBtn" style="display:none;">Cluster Responses</button>
+  <div id="clusters" class="d-flex flex-wrap"></div>
+
+  <!-- Bootstrap JS (optional) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    /***********************************************
+     * DOM references
+     ***********************************************/
+    const questionInput = document.getElementById("question");
+
+    const correctCountInput = document.getElementById("correctCount");
+    const createCorrectFieldsBtn = document.getElementById("createCorrectFieldsBtn");
+    const correctFieldsDiv = document.getElementById("correctFields");
+
+    const miscountInput = document.getElementById("miscount");
+    const createMisFieldsBtn = document.getElementById("createMisFieldsBtn");
+    const misconceptionFieldsDiv = document.getElementById("misconceptionFields");
+
+    const createQuizBtn = document.getElementById("createQuizBtn");
+    const quizInfoSection = document.getElementById("quizInfoSection");
+    const quizIdLabel = document.getElementById("quizIdLabel");
+    const qrImage = document.getElementById("qrImage");
+    const quizLinkA = document.getElementById("quizLink");
+    const startQuizBtn = document.getElementById("startQuizBtn");
+    const closeQuizBtn = document.getElementById("closeQuizBtn");
+
+    const teacherConsole = document.getElementById("teacherConsole");
+    const clusterBtn = document.getElementById("clusterBtn");
+    const clustersDiv = document.getElementById("clusters");
+
+    // We'll keep track of the quizId from the server
+    let currentQuizId = null;
+    // We'll store real-time student responses in an array so we can cluster them
+    let teacherResponses = [];
+    let socket = null;
+
+    /***********************************************
+     * 1) Dynamic Field Generation
+     ***********************************************/
+    createCorrectFieldsBtn.addEventListener("click", () => {
+      correctFieldsDiv.innerHTML = "";
+      const count = parseInt(correctCountInput.value) || 0;
+      for (let i = 0; i < count; i++) {
+        const label = document.createElement("label");
+        label.textContent = `Correct Answer #${i + 1}:`;
+        label.className = "form-label mt-2";
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "form-control";
+        input.id = `correct-${i}`;
+
+        correctFieldsDiv.appendChild(label);
+        correctFieldsDiv.appendChild(input);
+      }
+    });
+
+    createMisFieldsBtn.addEventListener("click", () => {
+      misconceptionFieldsDiv.innerHTML = "";
+      const count = parseInt(miscountInput.value) || 0;
+      for (let i = 0; i < count; i++) {
+        const label = document.createElement("label");
+        label.textContent = `Misconception #${i + 1}:`;
+        label.className = "form-label mt-2";
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "form-control";
+        input.id = `mis-${i}`;
+
+        misconceptionFieldsDiv.appendChild(label);
+        misconceptionFieldsDiv.appendChild(input);
+      }
+    });
+
+    /***********************************************
+     * 2) Create Quiz (Optional Flow)
+     ***********************************************/
+    createQuizBtn.addEventListener("click", async () => {
+      const question = questionInput.value.trim();
+      if (!question) {
+        alert("Please enter a question!");
+        return;
+      }
+
+      // Collect correct answers
+      const correctCount = parseInt(correctCountInput.value) || 0;
+      const correctAnswers = [];
+      for (let i = 0; i < correctCount; i++) {
+        const val = document.getElementById(`correct-${i}`).value.trim();
+        if (val) correctAnswers.push(val);
+      }
+
+      // Collect misconceptions
+      const misCount = parseInt(miscountInput.value) || 0;
+      const misconceptions = [];
+      for (let i = 0; i < misCount; i++) {
+        const val = document.getElementById(`mis-${i}`).value.trim();
+        if (val) misconceptions.push(val);
+      }
+
+      try {
+        // Example: call server to create quiz
+        const res = await fetch("/api/create-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question, misconceptions, correctAnswers })
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert("Error creating quiz: " + data.error);
+          return;
+        }
+
+        // Store quizId, show info
+        currentQuizId = data.quizId;
+        quizIdLabel.textContent = currentQuizId;
+        qrImage.src = data.qrDataURL;
+        quizLinkA.href = data.quizLink;
+        quizLinkA.textContent = data.quizLink;
+
+        quizInfoSection.style.display = "block";
+        clusterBtn.style.display = "inline-block";
+
+        // Now that we have a quiz ID, let's connect via Socket.IO
+        socket = io();
+        socket.emit("joinQuizRoom", currentQuizId);
+
+        // Listen for student responses in real time
+        socket.on("studentResponse", (payload) => {
+          const { username, response } = payload;
+          // 1) Store in an array
+          teacherResponses.push({ username, response });
+          // 2) Also display on the console
+          const p = document.createElement("p");
+          p.textContent = `${username}: ${response}`;
+          teacherConsole.appendChild(p);
+        });
+
+      } catch (err) {
+        alert("Error creating quiz: " + err.message);
+      }
+    });
+
+    /***********************************************
+     * 3) Start / Close Quiz (Optional)
+     ***********************************************/
+    startQuizBtn.addEventListener("click", async () => {
+      if (!currentQuizId) return;
+      try {
+        const res = await fetch("/api/start-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quizId: currentQuizId })
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert("Error starting quiz: " + data.error);
+        } else {
+          alert("Quiz started!");
+        }
+      } catch (err) {
+        alert("Error starting quiz: " + err.message);
+      }
+    });
+
+    closeQuizBtn.addEventListener("click", async () => {
+      if (!currentQuizId) return;
+      const confirmClose = confirm(
+        "Are you sure you want to CLOSE the quiz? No further actions will be allowed."
+      );
+      if (!confirmClose) return;
+
+      try {
+        const res = await fetch("/api/close-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quizId: currentQuizId })
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert("Error closing quiz: " + data.error);
+        } else {
+          alert("Quiz closed!");
+        }
+      } catch (err) {
+        alert("Error closing quiz: " + err.message);
+      }
+    });
+
+    /***********************************************
+     * 4) Cluster Button -> Build One JSON + POST
+     ***********************************************/
+    clusterBtn.addEventListener("click", async () => {
+      // Gather final data in the shape:
+      // {
+      //   question: "...",
+      //   correctAnswers: [...],
+      //   misconceptions: [...],
+      //   responses: [{ username, response }, ...]
+      // }
+
+      const question = questionInput.value.trim();
+
+      // Re-collect correct answers & misconceptions
+      // (In case teacher changed anything, optional)
+      const correctCount = parseInt(correctCountInput.value) || 0;
+      const correctAnswers = [];
+      for (let i = 0; i < correctCount; i++) {
+        const val = document.getElementById(`correct-${i}`).value.trim();
+        if (val) correctAnswers.push(val);
+      }
+
+      const misCount = parseInt(miscountInput.value) || 0;
+      const misconceptions = [];
+      for (let i = 0; i < misCount; i++) {
+        const val = document.getElementById(`mis-${i}`).value.trim();
+        if (val) misconceptions.push(val);
+      }
+
+      // teacherResponses[] holds all real-time responses
+      const clusterPayload = {
+        question,
+        correctAnswers,
+        misconceptions,
+        responses: teacherResponses
+      };
+
+      clustersDiv.innerHTML = "";
+
+      try {
+        const res = await fetch("/api/cluster-responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(clusterPayload)
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          alert("Error clustering responses: " + data.error);
+          return;
+        }
+
+        renderClusters(data);
+      } catch (err) {
+        alert("Error clustering responses: " + err.message);
+      }
+    });
+
+    /***********************************************
+     * 5) Helper to render clusters
+     ***********************************************/
+    function renderClusters(clusterData) {
+      clustersDiv.innerHTML = "";
+      if (!clusterData.clusters) {
+        clustersDiv.innerHTML = "<p>No valid cluster data returned.</p>";
+        return;
+      }
+
+      clusterData.clusters.forEach((cluster) => {
+        const card = document.createElement("div");
+        card.className = "cluster-card";
+
+        const title = document.createElement("div");
+        title.className = "cluster-title";
+        title.textContent = `[Cluster #${cluster.clusterId}] ${cluster.clusterLabel || ""}`;
+        card.appendChild(title);
+
+        if (cluster.clusterDescription) {
+          const desc = document.createElement("div");
+          desc.className = "cluster-description";
+          desc.textContent = cluster.clusterDescription;
+          card.appendChild(desc);
+        }
+
+        if (Array.isArray(cluster.members)) {
+          cluster.members.forEach((m) => {
+            const memberDiv = document.createElement("div");
+            memberDiv.textContent = `${m.username}: ${m.response}`;
+            card.appendChild(memberDiv);
+          });
+        }
+
+        clustersDiv.appendChild(card);
+      });
+    }
+  </script>
+</body>
+</html>
