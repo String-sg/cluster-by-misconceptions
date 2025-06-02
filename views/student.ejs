@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Student Quiz Page with Speech-to-Text</title>
+  <!-- Bootstrap CSS -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+  />
+  <!-- Bootstrap Icons (for mic icon) -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css"
+  />
+  <style>
+    body {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    /* Sleek, pill-shaped input group styling */
+    .answer-input-group {
+      border: 1px solid #ced4da;
+      border-radius: 50px;
+      overflow: hidden;
+    }
+    /* Mic icon circle on the left */
+    .mic-btn {
+      background-color: #f8f9fa; /* Light gray/white BG */
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 3rem;
+      cursor: pointer;
+    }
+    .mic-btn.active {
+      background-color: #d1e7dd; /* Light green BG when active */
+    }
+    /* Make the mic icon larger and centered */
+    .mic-btn i {
+      font-size: 1.2rem;
+    }
+    /* Submissions spacing */
+    #submissions div {
+      margin-bottom: 5px;
+    }
+    /* Blue status text for speech recognition */
+    #speechStatus {
+      color: #0d6efd; /* Bootstrap primary blue */
+      font-size: 0.9rem;
+      margin-top: 0.5rem;
+      margin-bottom: 10px;
+      display: none; /* We'll toggle it in JS */
+    }
+  </style>
+</head>
+<body class="container py-4">
+  <h1 class="mb-4">Student Quiz Page</h1>
+  <!-- For demonstration, pass the quizId dynamically -->
+  <p class="text-muted">Quiz ID: <%= quizId %></p>
+
+  <!-- Join Section -->
+  <div id="joinSection" class="mb-4">
+    <div class="mb-3">
+      <label for="username" class="form-label">Enter Username:</label>
+      <input
+        type="text"
+        class="form-control"
+        id="username"
+        placeholder="Enter your username..."
+      />
+    </div>
+    <button class="btn btn-primary" id="joinBtn">Join Quiz</button>
+  </div>
+
+  <!-- Quiz Section -->
+  <div id="quizSection" style="display:none;">
+    <p id="quizStatus" class="alert alert-warning">Waiting for quiz to start...</p>
+
+    <!-- Sleek input group with mic icon on the left -->
+    <div class="input-group mb-1 answer-input-group">
+      <button
+        class="mic-btn"
+        id="micBtn"
+        type="button"
+        data-bs-toggle="tooltip"
+        data-bs-placement="top"
+        title="Click to start/stop speech recognition"
+      >
+        <i class="bi bi-mic-fill"></i>
+      </button>
+      <input
+        type="text"
+        class="form-control border-0"
+        id="answer"
+        placeholder="Speak or type your answer..."
+        aria-label="Your Answer"
+      />
+    </div>
+
+    <!-- Speech status text (hidden initially) -->
+    <div id="speechStatus">
+      Speech recognition is active. Click on the button again to stop it.
+    </div>
+
+    <button class="btn btn-success mb-3" id="submitBtn">Submit</button>
+    <div id="submissions" class="text-muted"></div>
+  </div>
+
+  <!-- Socket.IO client (from your server) -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Bootstrap JS (for tooltips, etc.) -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
+  ></script>
+  <script>
+    const quizId = "<%= quizId %>";
+
+    const joinSection = document.getElementById("joinSection");
+    const quizSection = document.getElementById("quizSection");
+    const quizStatus = document.getElementById("quizStatus");
+    const usernameInput = document.getElementById("username");
+    const joinBtn = document.getElementById("joinBtn");
+    const answerInput = document.getElementById("answer");
+    const submitBtn = document.getElementById("submitBtn");
+    const submissionsDiv = document.getElementById("submissions");
+    const micBtn = document.getElementById("micBtn");
+    const speechStatus = document.getElementById("speechStatus");
+
+    // Initialize socket
+    const socket = io();
+
+    // ====== Join quiz logic ======
+    usernameInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        joinQuiz();
+      }
+    });
+    joinBtn.addEventListener("click", joinQuiz);
+
+    async function joinQuiz() {
+      const username = usernameInput.value.trim();
+      if (!username) {
+        alert("Please enter a username!");
+        return;
+      }
+      try {
+        const res = await fetch("/api/join-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quizId, username }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          alert(data.error || "Could not join quiz.");
+          return;
+        }
+        joinSection.style.display = "none";
+        quizSection.style.display = "block";
+        socket.emit("joinQuizRoom", quizId);
+      } catch (err) {
+        alert("Error joining quiz: " + err.message);
+      }
+    }
+
+    // Listen for quiz started
+    socket.on("quizStarted", (data) => {
+      if (data.quizId === quizId) {
+        quizStatus.textContent = "Quiz has started! Please submit your answer.";
+        quizStatus.classList.remove("alert-warning");
+        quizStatus.classList.add("alert-success");
+      }
+    });
+
+    // Listen for quiz closed
+    socket.on("quizClosed", (data) => {
+      if (data.quizId === quizId) {
+        quizStatus.textContent = "Quiz is CLOSED. No more submissions allowed.";
+        quizStatus.classList.remove("alert-warning", "alert-success");
+        quizStatus.classList.add("alert-danger");
+        submitBtn.disabled = true;
+        answerInput.disabled = true;
+        micBtn.disabled = true;
+      }
+    });
+
+    // Submit answer
+    submitBtn.addEventListener("click", async () => {
+      const username = usernameInput.value.trim();
+      const response = answerInput.value.trim();
+      if (!response) {
+        alert("Please provide an answer!");
+        return;
+      }
+      try {
+        const res = await fetch("/api/submit-response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quizId, username, response }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          const div = document.createElement("div");
+          div.textContent = `You submitted: ${response}`;
+          submissionsDiv.appendChild(div);
+          answerInput.value = "";
+        } else {
+          alert(data.error || "Error submitting response.");
+        }
+      } catch (err) {
+        alert("Error submitting response: " + err.message);
+      }
+    });
+
+    // ====== Speech Recognition Setup ======
+    let recognition;
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (SpeechRecognition) {
+      recognition = new SpeechRecognition();
+      recognition.lang = "en-SG";         // or your preferred locale
+      recognition.continuous = true;      // keep going until we stop
+      recognition.interimResults = false; // only final results
+
+      recognition.onstart = () => {
+        // Listening has started
+        micBtn.classList.add("active");
+        speechStatus.style.display = "block";
+      };
+
+      recognition.onend = () => {
+        // Always add a period + space if there's any text
+        let currentValue = answerInput.value.trim();
+        if (currentValue) {
+          currentValue += ". ";
+          
+          console.log(currentValue)
+          
+          currentValue = currentValue.replaceAll("  ", ". ")
+          
+          console.log(currentValue)
+        }
+        answerInput.value = currentValue;
+
+        // If the mic is still active, auto-restart
+        if (micBtn.classList.contains("active")) {
+          recognition.start();
+        } else {
+          // If user intentionally stopped
+          speechStatus.style.display = "none";
+        }
+      };
+
+      recognition.onresult = (event) => {
+        let transcript = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        // Append the recognized text to the input
+        answerInput.value = (answerInput.value + " " + transcript).trim();
+      };
+
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        alert("Speech recognition error: " + event.error);
+        recognition.stop();
+        micBtn.classList.remove("active");
+        speechStatus.style.display = "none";
+      };
+    } else {
+      console.warn("Speech Recognition not supported by this browser.");
+      micBtn.disabled = true;
+    }
+
+    // Toggle speech recognition on mic button click
+    micBtn.addEventListener("click", () => {
+      if (!recognition) return; // No support
+
+      if (micBtn.classList.contains("active")) {
+        // Currently listening, so stop
+        recognition.stop();
+        micBtn.classList.remove("active");
+      } else {
+        // Not listening, so start
+        micBtn.classList.add("active");
+        recognition.start();
+      }
+    });
+  </script>
+</body>
+</html>
